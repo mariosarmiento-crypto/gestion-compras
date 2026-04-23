@@ -1,0 +1,77 @@
+from pydantic import BaseModel
+from datetime import date
+from typing import Optional, List
+
+class HotelBase(BaseModel):
+    name: str
+
+class Hotel(HotelBase):
+    id: int
+    class Config:
+        from_attributes = True
+
+class ProviderBase(BaseModel):
+    name: str
+    rut: str
+
+class Provider(ProviderBase):
+    id: int
+    class Config:
+        from_attributes = True
+
+class MovementBase(BaseModel):
+    hotel_id: int
+    date: date
+    description: str
+    account_name: str
+    provider_name: str # Para manejar creación/búsqueda de proveedor
+    provider_rut: str
+    doc_type: str
+    doc_number: str
+    total: float
+    iva: float
+    net: float
+    observations: Optional[str] = None
+
+class MovementCreate(MovementBase):
+    pass
+
+class UserBase(BaseModel):
+    username: str
+    role: str
+
+class UserCreate(UserBase):
+    password: str
+
+class User(UserBase):
+    id: int
+    class Config:
+        from_attributes = True
+
+class Movement(BaseModel):
+    id: int
+    hotel_id: int
+    date: date
+    description: str
+    account_name: str
+    provider_id: int
+    doc_type: str
+    doc_number: str
+    total: float
+    iva: float
+    net: float
+    observations: Optional[str] = None
+    
+    hotel: Hotel
+    provider: Provider
+    user: Optional[User] = None
+    
+    class Config:
+        from_attributes = True
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class TokenData(BaseModel):
+    username: Optional[str] = None
