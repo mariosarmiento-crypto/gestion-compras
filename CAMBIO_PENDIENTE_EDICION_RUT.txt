@@ -1,0 +1,30 @@
+Cambio requerido en main.py:
+
+1) Agregar bandera global:
+let editMode=false;
+
+2) En showForm():
+editMode=false;
+
+3) En cancelEdit():
+editMode=false;
+
+4) En saveMovement(), después de guardar correctamente:
+editMode=false;
+
+5) En editMov(id):
+editMode=true;
+el('rut').readOnly=false;
+el('rut').style.background='#fff';
+
+6) En el listener de proveedor, bloquear RUT solo cuando NO está en modo edición:
+if(p){
+  el('rut').value=p.rut;
+  if(!editMode){
+    el('rut').readOnly=true;
+    el('rut').style.background='#eee';
+  } else {
+    el('rut').readOnly=false;
+    el('rut').style.background='#fff';
+  }
+}
