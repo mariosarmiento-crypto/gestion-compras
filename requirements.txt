@@ -9,3 +9,4 @@ openpyxl
 bcrypt
 jinja2
 requests
+reportlab
