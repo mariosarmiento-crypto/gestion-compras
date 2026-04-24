@@ -1,222 +1,158 @@
 import os
-from datetime import datetime, timedelta, date as date_type
+from datetime import datetime, timedelta, date
 from io import BytesIO
 from typing import Optional, List
 
 import bcrypt
 import jwt
 import pandas as pd
-from fastapi import FastAPI, Depends, HTTPException, status, Response, Query
+from fastapi import FastAPI, Depends, HTTPException, Response, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy import Column, Date, Float, ForeignKey, Integer, String, UniqueConstraint, create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import Session, relationship, sessionmaker
-
+from sqlalchemy.orm import declarative_base, relationship, sessionmaker, Session
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import landscape, letter
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Table, TableStyle
 
-# =========================
-# CONFIGURACIÓN GENERAL
-# =========================
-SECRET_KEY = os.getenv("SECRET_KEY", "CAMBIAR_ESTA_CLAVE_SECRETA")
+SECRET_KEY = os.getenv("SECRET_KEY", "CAMBIAR_ESTA_CLAVE")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./gastos.db")
-
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, connect_args=connect_args)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 Base = declarative_base()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-# =========================
-# BASE DE DATOS
-# =========================
 class Hotel(Base):
     __tablename__ = "hoteles"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, index=True)
-    movements = relationship("Movement", back_populates="hotel")
 
 class User(Base):
     __tablename__ = "usuarios"
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
     hashed_password = Column(String)
-    role = Column(String, default="operator")
+    role = Column(String, default="admin")
 
 class Provider(Base):
     __tablename__ = "proveedores"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, index=True)
     rut = Column(String, unique=True, index=True)
-    movements = relationship("Movement", back_populates="provider")
 
 class Movement(Base):
     __tablename__ = "movimientos"
     id = Column(Integer, primary_key=True, index=True)
     hotel_id = Column(Integer, ForeignKey("hoteles.id"))
-    date = Column(Date)
-    description = Column(String)
-    account_name = Column(String)
+    fecha = Column(Date)
+    descripcion = Column(String)
+    nombre_cuenta = Column(String)
     provider_id = Column(Integer, ForeignKey("proveedores.id"))
-    doc_type = Column(String)
-    doc_number = Column(String)
-    total = Column(Float)
+    tipo_documento = Column(String)
+    numero_documento = Column(String)
+    monto_total = Column(Float)
     iva = Column(Float)
-    net = Column(Float)
-    observations = Column(String, nullable=True)
+    neto = Column(Float)
+    observaciones = Column(String, nullable=True)
     user_id = Column(Integer, ForeignKey("usuarios.id"))
-
-    hotel = relationship("Hotel", back_populates="movements")
-    provider = relationship("Provider", back_populates="movements")
+    hotel = relationship("Hotel")
+    provider = relationship("Provider")
     user = relationship("User")
-    __table_args__ = (UniqueConstraint("provider_id", "doc_type", "doc_number", name="_provider_doc_uc"),)
+    __table_args__ = (UniqueConstraint("provider_id", "tipo_documento", "numero_documento", name="uq_doc_proveedor"),)
 
-# =========================
-# SCHEMAS
-# =========================
 class HotelOut(BaseModel):
     id: int
     name: str
-    class Config:
-        from_attributes = True
+    class Config: from_attributes = True
 
 class ProviderOut(BaseModel):
     id: int
     name: str
     rut: str
-    class Config:
-        from_attributes = True
-
-class UserOut(BaseModel):
-    id: int
-    username: str
-    role: str
-    class Config:
-        from_attributes = True
+    class Config: from_attributes = True
 
 class MovementCreate(BaseModel):
     hotel_id: int
-    date: date_type
-    description: str
-    account_name: str
-    provider_name: str
-    provider_rut: str
-    doc_type: str
-    doc_number: str
-    total: float
+    fecha: date
+    descripcion: str
+    nombre_cuenta: str
+    proveedor: str
+    rut: str
+    tipo_documento: str
+    numero_documento: str
+    monto_total: float
     iva: float
-    net: float
-    observations: Optional[str] = None
+    neto: float
+    observaciones: Optional[str] = ""
 
 class MovementOut(BaseModel):
     id: int
     hotel_id: int
-    date: date_type
-    description: str
-    account_name: str
-    provider_id: int
-    doc_type: str
-    doc_number: str
-    total: float
+    fecha: date
+    descripcion: str
+    nombre_cuenta: str
+    tipo_documento: str
+    numero_documento: str
+    monto_total: float
     iva: float
-    net: float
-    observations: Optional[str] = None
+    neto: float
+    observaciones: Optional[str]
     hotel: HotelOut
     provider: ProviderOut
-    user: Optional[UserOut] = None
-    class Config:
-        from_attributes = True
+    class Config: from_attributes = True
 
 class Token(BaseModel):
     access_token: str
     token_type: str
 
-# =========================
-# UTILIDADES
-# =========================
-def get_db():
+def db_session():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
 
-def get_password_hash(password: str) -> str:
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+def hash_password(p: str) -> str:
+    return bcrypt.hashpw(p.encode(), bcrypt.gensalt()).decode()
 
-def verify_password(password: str, hashed_password: str) -> bool:
-    return bcrypt.checkpw(password.encode("utf-8"), hashed_password.encode("utf-8"))
+def check_password(p: str, h: str) -> bool:
+    return bcrypt.checkpw(p.encode(), h.encode())
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+def make_token(username: str) -> str:
+    payload = {"sub": username, "exp": datetime.utcnow() + timedelta(days=1)}
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
-async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+def user_from_token(token: str, db: Session):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username = payload.get("sub")
-        if not username:
-            raise HTTPException(status_code=401, detail="Token inválido")
     except Exception:
-        raise HTTPException(status_code=401, detail="No autorizado")
+        raise HTTPException(status_code=401, detail="Token inválido")
     user = db.query(User).filter(User.username == username).first()
     if not user:
         raise HTTPException(status_code=401, detail="Usuario no encontrado")
     return user
 
-def generate_excel(rows):
-    output = BytesIO()
-    pd.DataFrame(rows).to_excel(output, index=False, sheet_name="Registros", engine="openpyxl")
-    output.seek(0)
-    return output
+def current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(db_session)):
+    return user_from_token(token, db)
 
-def generate_pdf(rows, title="Registro de compras y gastos"):
-    output = BytesIO()
-    doc = SimpleDocTemplate(output, pagesize=landscape(letter))
-    styles = getSampleStyleSheet()
-    elements = [Paragraph(title, styles["Title"])]
-    if not rows:
-        elements.append(Paragraph("No hay datos para mostrar.", styles["Normal"]))
-    else:
-        headers = list(rows[0].keys())
-        data = [headers] + [[str(item.get(h, "")) for h in headers] for item in rows]
-        table = Table(data, repeatRows=1)
-        table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
-            ("FONTSIZE", (0, 0), (-1, -1), 7),
-        ]))
-        elements.append(table)
-    doc.build(elements)
-    output.seek(0)
-    return output
-
-# =========================
-# APP
-# =========================
 app = FastAPI(title="Gestión de Compras y Gastos")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 Base.metadata.create_all(bind=engine)
 
 @app.on_event("startup")
-def startup_populate():
+def seed():
     db = SessionLocal()
     try:
-        for hotel_name in ["Mare Hotel", "Reñaca House"]:
-            if not db.query(Hotel).filter(Hotel.name == hotel_name).first():
-                db.add(Hotel(name=hotel_name))
+        for h in ["Mare Hotel", "Reñaca House"]:
+            if not db.query(Hotel).filter(Hotel.name == h).first(): db.add(Hotel(name=h))
         if not db.query(User).filter(User.username == "admin").first():
-            db.add(User(username="admin", hashed_password=get_password_hash("admin123"), role="admin"))
+            db.add(User(username="admin", hashed_password=hash_password("admin123"), role="admin"))
         db.commit()
     finally:
         db.close()
@@ -226,190 +162,109 @@ def home():
     return HTMLResponse(HTML_PAGE)
 
 @app.post("/token", response_model=Token)
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == form_data.username).first()
-    if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario o clave incorrecta")
-    return {"access_token": create_access_token({"sub": user.username}), "token_type": "bearer"}
+def token(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(db_session)):
+    user = db.query(User).filter(User.username == form.username).first()
+    if not user or not check_password(form.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Usuario o clave incorrecta")
+    return {"access_token": make_token(user.username), "token_type": "bearer"}
 
 @app.get("/hoteles", response_model=List[HotelOut])
-def hoteles(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return db.query(Hotel).all()
+def hoteles(db: Session = Depends(db_session), user: User = Depends(current_user)):
+    return db.query(Hotel).order_by(Hotel.name).all()
 
 @app.get("/proveedores", response_model=List[ProviderOut])
-def proveedores(q: Optional[str] = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    query = db.query(Provider)
-    if q:
-        query = query.filter(Provider.name.contains(q))
-    return query.order_by(Provider.name).all()
+def proveedores(db: Session = Depends(db_session), user: User = Depends(current_user)):
+    return db.query(Provider).order_by(Provider.name).all()
 
 @app.get("/cuentas")
-def cuentas(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    rows = db.query(Movement.account_name).distinct().all()
-    return [r[0] for r in rows if r[0]]
+def cuentas(db: Session = Depends(db_session), user: User = Depends(current_user)):
+    return [x[0] for x in db.query(Movement.nombre_cuenta).distinct().all() if x[0]]
 
 @app.post("/movimientos", response_model=MovementOut)
-def crear_movimiento(movement: MovementCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    provider = db.query(Provider).filter(Provider.name == movement.provider_name).first()
-    if provider and provider.rut != movement.provider_rut:
-        raise HTTPException(status_code=400, detail=f"El proveedor ya existe con otro RUT: {provider.rut}")
-    if not provider:
-        provider_by_rut = db.query(Provider).filter(Provider.rut == movement.provider_rut).first()
-        if provider_by_rut:
-            raise HTTPException(status_code=400, detail=f"El RUT ya está asociado al proveedor {provider_by_rut.name}")
-        provider = Provider(name=movement.provider_name, rut=movement.provider_rut)
-        db.add(provider)
-        db.commit()
-        db.refresh(provider)
-    db_movement = Movement(
-        hotel_id=movement.hotel_id,
-        date=movement.date,
-        description=movement.description,
-        account_name=movement.account_name,
-        provider_id=provider.id,
-        doc_type=movement.doc_type,
-        doc_number=movement.doc_number,
-        total=movement.total,
-        iva=movement.iva,
-        net=movement.net,
-        observations=movement.observations,
-        user_id=user.id,
-    )
+def crear(m: MovementCreate, db: Session = Depends(db_session), user: User = Depends(current_user)):
+    proveedor = db.query(Provider).filter(Provider.name == m.proveedor).first()
+    if proveedor and proveedor.rut != m.rut:
+        raise HTTPException(status_code=400, detail=f"Proveedor existente con otro RUT: {proveedor.rut}")
+    if not proveedor:
+        por_rut = db.query(Provider).filter(Provider.rut == m.rut).first()
+        if por_rut:
+            raise HTTPException(status_code=400, detail=f"El RUT ya existe para proveedor: {por_rut.name}")
+        proveedor = Provider(name=m.proveedor, rut=m.rut)
+        db.add(proveedor); db.commit(); db.refresh(proveedor)
+    mov = Movement(hotel_id=m.hotel_id, fecha=m.fecha, descripcion=m.descripcion, nombre_cuenta=m.nombre_cuenta, provider_id=proveedor.id, tipo_documento=m.tipo_documento, numero_documento=m.numero_documento, monto_total=m.monto_total, iva=m.iva, neto=m.neto, observaciones=m.observaciones, user_id=user.id)
     try:
-        db.add(db_movement)
-        db.commit()
+        db.add(mov); db.commit(); db.refresh(mov)
     except Exception:
-        db.rollback()
-        raise HTTPException(status_code=400, detail="Registro duplicado: proveedor + tipo de documento + número de documento")
-    db.refresh(db_movement)
-    return db_movement
+        db.rollback(); raise HTTPException(status_code=400, detail="Registro duplicado: proveedor + tipo documento + número documento")
+    return mov
 
 @app.get("/movimientos", response_model=List[MovementOut])
-def listar_movimientos(
-    hotel_id: Optional[int] = None,
-    date_from: Optional[date_type] = None,
-    date_to: Optional[date_type] = None,
-    provider_id: Optional[int] = None,
-    doc_number: Optional[str] = None,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    query = db.query(Movement)
-    if hotel_id:
-        query = query.filter(Movement.hotel_id == hotel_id)
-    if date_from:
-        query = query.filter(Movement.date >= date_from)
-    if date_to:
-        query = query.filter(Movement.date <= date_to)
-    if provider_id:
-        query = query.filter(Movement.provider_id == provider_id)
-    if doc_number:
-        query = query.filter(Movement.doc_number.contains(doc_number))
-    return query.order_by(Movement.date.desc(), Movement.id.desc()).all()
+def listar(hotel_id: Optional[int] = None, fecha_desde: Optional[date] = None, fecha_hasta: Optional[date] = None, numero_documento: Optional[str] = None, db: Session = Depends(db_session), user: User = Depends(current_user)):
+    q = db.query(Movement)
+    if hotel_id: q = q.filter(Movement.hotel_id == hotel_id)
+    if fecha_desde: q = q.filter(Movement.fecha >= fecha_desde)
+    if fecha_hasta: q = q.filter(Movement.fecha <= fecha_hasta)
+    if numero_documento: q = q.filter(Movement.numero_documento.contains(numero_documento))
+    return q.order_by(Movement.fecha.desc(), Movement.id.desc()).all()
 
-@app.delete("/movimientos/{movement_id}")
-def eliminar_movimiento(movement_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    mov = db.query(Movement).filter(Movement.id == movement_id).first()
-    if not mov:
-        raise HTTPException(status_code=404, detail="Registro no encontrado")
-    db.delete(mov)
-    db.commit()
-    return {"message": "Registro eliminado"}
+@app.delete("/movimientos/{id}")
+def eliminar(id: int, db: Session = Depends(db_session), user: User = Depends(current_user)):
+    mov = db.query(Movement).filter(Movement.id == id).first()
+    if not mov: raise HTTPException(status_code=404, detail="Registro no encontrado")
+    db.delete(mov); db.commit()
+    return {"ok": True}
 
-def export_rows(db: Session, hotel_id=None, date_from=None, date_to=None):
-    query = db.query(Movement)
-    if hotel_id:
-        query = query.filter(Movement.hotel_id == hotel_id)
-    if date_from:
-        query = query.filter(Movement.date >= date_from)
-    if date_to:
-        query = query.filter(Movement.date <= date_to)
-    rows = []
-    for m in query.order_by(Movement.date.desc()).all():
-        rows.append({
-            "FECHA": m.date,
-            "HOTEL": m.hotel.name,
-            "DESCRIPCION": m.description,
-            "NOMBRE DE CUENTA": m.account_name,
-            "PROVEEDOR": m.provider.name,
-            "RUT": m.provider.rut,
-            "TIPO DE DOCUMENTO": m.doc_type,
-            "NUMERO DOC.": m.doc_number,
-            "MONTO TOTAL": m.total,
-            "IVA": m.iva,
-            "NETO": m.net,
-            "OBSERVACIONES": m.observations or "",
-        })
+def rows_for_export(db, hotel_id=None, fecha_desde=None, fecha_hasta=None):
+    q = db.query(Movement)
+    if hotel_id: q = q.filter(Movement.hotel_id == hotel_id)
+    if fecha_desde: q = q.filter(Movement.fecha >= fecha_desde)
+    if fecha_hasta: q = q.filter(Movement.fecha <= fecha_hasta)
+    rows=[]
+    for m in q.order_by(Movement.fecha.desc()).all():
+        rows.append({"FECHA": m.fecha, "HOTEL": m.hotel.name, "DESCRIPCION": m.descripcion, "NOMBRE DE CUENTA": m.nombre_cuenta, "PROVEEDOR": m.provider.name, "RUT": m.provider.rut, "TIPO DE DOCUMENTO": m.tipo_documento, "NUMERO DOC.": m.numero_documento, "MONTO TOTAL": m.monto_total, "IVA": m.iva, "NETO": m.neto, "OBSERVACIONES": m.observaciones or ""})
     return rows
 
-@app.get("/export/{format}")
-def exportar(format: str, hotel_id: Optional[int] = None, date_from: Optional[date_type] = None, date_to: Optional[date_type] = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    rows = export_rows(db, hotel_id, date_from, date_to)
-    if format == "excel":
-        file = generate_excel(rows)
-        return Response(file.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": "attachment; filename=registros.xlsx"})
-    if format == "pdf":
-        file = generate_pdf(rows)
-        return Response(file.getvalue(), media_type="application/pdf", headers={"Content-Disposition": "attachment; filename=registros.pdf"})
+@app.get("/export/{fmt}")
+def exportar(fmt: str, token: str = Query(...), hotel_id: Optional[int] = None, fecha_desde: Optional[date] = None, fecha_hasta: Optional[date] = None, db: Session = Depends(db_session)):
+    user_from_token(token, db)
+    rows = rows_for_export(db, hotel_id, fecha_desde, fecha_hasta)
+    if fmt == "excel":
+        out = BytesIO(); pd.DataFrame(rows).to_excel(out, index=False, sheet_name="Registros", engine="openpyxl"); out.seek(0)
+        return Response(out.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition":"attachment; filename=registros.xlsx"})
+    if fmt == "pdf":
+        out = BytesIO(); doc = SimpleDocTemplate(out, pagesize=landscape(letter)); styles=getSampleStyleSheet(); elements=[Paragraph("Registro de compras y gastos", styles["Title"])]
+        if rows:
+            headers=list(rows[0].keys()); data=[headers]+[[str(r.get(h,"")) for h in headers] for r in rows]; table=Table(data, repeatRows=1); table.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.5,colors.black),("BACKGROUND",(0,0),(-1,0),colors.grey),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTSIZE",(0,0),(-1,-1),7)])); elements.append(table)
+        else: elements.append(Paragraph("No hay datos para mostrar.", styles["Normal"]))
+        doc.build(elements); out.seek(0)
+        return Response(out.getvalue(), media_type="application/pdf", headers={"Content-Disposition":"attachment; filename=registros.pdf"})
     raise HTTPException(status_code=400, detail="Formato no soportado")
 
 HTML_PAGE = r'''
-<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Gestión de Compras y Gastos</title>
-<style>
-body{font-family:Arial,sans-serif;margin:0;background:#f5f6f8;color:#222}.wrap{max-width:1100px;margin:auto;padding:18px}.card{background:#fff;border-radius:14px;padding:18px;box-shadow:0 2px 12px #0001;margin-bottom:16px}input,select,textarea,button{font-size:15px;padding:10px;border:1px solid #ccc;border-radius:8px}button{background:#111;color:#fff;cursor:pointer;border:0}.secondary{background:#555}.danger{background:#b42318}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}.hidden{display:none}table{width:100%;border-collapse:collapse;background:white}th,td{padding:8px;border-bottom:1px solid #ddd;text-align:left;font-size:13px}.top{display:flex;justify-content:space-between;gap:10px;align-items:center}.actions{display:flex;gap:8px;flex-wrap:wrap}.muted{color:#777;font-size:13px}@media(max-width:700px){.top{display:block}.actions{margin-top:10px}table{display:block;overflow:auto}.wrap{padding:10px}.card{padding:12px}}
-</style>
-</head>
-<body>
-<div class="wrap">
-  <div class="card top">
-    <div><h2>Gestión de Compras y Gastos</h2><div class="muted">Mare Hotel / Reñaca House</div></div>
-    <div class="actions"><button onclick="showForm()">+ Nuevo registro</button><button class="secondary" onclick="logout()">Salir</button></div>
-  </div>
-
-  <div id="login" class="card">
-    <h3>Ingreso</h3>
-    <div class="grid"><input id="username" placeholder="Usuario" value="admin"><input id="password" type="password" placeholder="Clave" value="admin123"><button onclick="login()">Entrar</button></div>
-  </div>
-
-  <div id="app" class="hidden">
-    <div id="formCard" class="card hidden">
-      <h3>Nuevo registro</h3>
-      <div class="grid">
-        <select id="hotel_id"></select><input id="date" type="date"><input id="description" placeholder="Descripción / Glosa"><input id="account_name" list="accounts" placeholder="Nombre de cuenta"><datalist id="accounts"></datalist><input id="provider_name" list="providers" placeholder="Proveedor"><datalist id="providers"></datalist><input id="provider_rut" placeholder="RUT"><select id="doc_type"><option>Factura</option><option>Boleta</option><option>Factura exenta</option><option>Nota de crédito</option><option>Nota de débito</option><option>Otro</option></select><input id="doc_number" placeholder="Número doc."><input id="total" type="number" step="0.01" placeholder="Monto total"><input id="iva" type="number" step="0.01" placeholder="IVA"><input id="net" type="number" step="0.01" placeholder="Neto"><input id="observations" placeholder="Observaciones">
-      </div><br><button onclick="saveMovement()">Guardar</button> <button class="secondary" onclick="hideForm()">Cancelar</button>
-    </div>
-
-    <div class="card">
-      <h3>Filtros</h3>
-      <div class="grid"><select id="filter_hotel"><option value="">Todos los hoteles</option></select><input id="date_from" type="date"><input id="date_to" type="date"><input id="doc_filter" placeholder="Nº documento"><button onclick="loadMovements()">Filtrar</button></div><br>
-      <div class="actions"><button class="secondary" onclick="exportFile('excel')">Descargar Excel</button><button class="secondary" onclick="exportFile('pdf')">Descargar PDF</button></div>
-    </div>
-
-    <div class="card"><h3>Registros</h3><div style="overflow:auto"><table><thead><tr><th>Fecha</th><th>Hotel</th><th>Cuenta</th><th>Proveedor</th><th>RUT</th><th>Doc</th><th>Total</th><th>IVA</th><th>Neto</th><th></th></tr></thead><tbody id="rows"></tbody></table></div></div>
-  </div>
-</div>
+<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Gestión de Compras y Gastos</title><style>
+body{font-family:Arial,sans-serif;margin:0;background:#f5f6f8;color:#222}.wrap{max-width:1100px;margin:auto;padding:18px}.card{background:#fff;border-radius:14px;padding:18px;box-shadow:0 2px 12px #0001;margin-bottom:16px}input,select,button{font-size:15px;padding:10px;border:1px solid #ccc;border-radius:8px;box-sizing:border-box}button{background:#111;color:#fff;cursor:pointer;border:0}.secondary{background:#555}.danger{background:#b42318}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}.hidden{display:none}table{width:100%;border-collapse:collapse;background:white}th,td{padding:8px;border-bottom:1px solid #ddd;text-align:left;font-size:13px}.top{display:flex;justify-content:space-between;gap:10px;align-items:center}.actions{display:flex;gap:8px;flex-wrap:wrap}.muted{color:#777;font-size:13px}@media(max-width:700px){.top{display:block}.actions{margin-top:10px}table{display:block;overflow:auto}.wrap{padding:10px}.card{padding:12px}}
+</style></head><body><div class="wrap"><div class="card top"><div><h2>Gestión de Compras y Gastos</h2><div class="muted">Mare Hotel / Reñaca House</div></div><div class="actions"><button type="button" onclick="showForm()">+ Nuevo registro</button><button type="button" class="secondary" onclick="logout()">Salir</button></div></div>
+<div id="loginCard" class="card"><h3>Ingreso</h3><div class="grid"><input id="username" placeholder="Usuario" value="admin"><input id="password" type="password" placeholder="Clave" value="admin123"><button type="button" onclick="doLogin()">Entrar</button></div></div>
+<div id="appPanel" class="hidden"><div id="formCard" class="card hidden"><h3>Nuevo registro</h3><div class="grid"><select id="hotel_id"></select><input id="fecha" type="date"><input id="descripcion" placeholder="Descripción / Glosa"><input id="nombre_cuenta" list="accountsList" placeholder="Nombre de cuenta"><datalist id="accountsList"></datalist><input id="proveedor" list="providersList" placeholder="Proveedor"><datalist id="providersList"></datalist><input id="rut" placeholder="RUT"><select id="tipo_documento"><option>Factura</option><option>Boleta</option><option>Factura exenta</option><option>Nota de crédito</option><option>Nota de débito</option><option>Otro</option></select><input id="numero_documento" placeholder="Número doc."><input id="monto_total" type="number" step="0.01" placeholder="Monto total"><input id="iva" type="number" step="0.01" placeholder="IVA"><input id="neto" type="number" step="0.01" placeholder="Neto"><input id="observaciones" placeholder="Observaciones"></div><br><button type="button" onclick="saveMovement()">Guardar</button> <button type="button" class="secondary" onclick="hideForm()">Cancelar</button></div>
+<div class="card"><h3>Filtros</h3><div class="grid"><select id="filter_hotel"><option value="">Todos los hoteles</option></select><input id="fecha_desde" type="date"><input id="fecha_hasta" type="date"><input id="doc_filter" placeholder="Nº documento"><button type="button" onclick="loadMovements()">Filtrar</button></div><br><div class="actions"><button type="button" class="secondary" onclick="exportFile('excel')">Descargar Excel</button><button type="button" class="secondary" onclick="exportFile('pdf')">Descargar PDF</button></div></div>
+<div class="card"><h3>Registros</h3><div style="overflow:auto"><table><thead><tr><th>Fecha</th><th>Hotel</th><th>Cuenta</th><th>Proveedor</th><th>RUT</th><th>Doc</th><th>Total</th><th>IVA</th><th>Neto</th><th></th></tr></thead><tbody id="rows"></tbody></table></div></div></div></div>
 <script>
 let token=localStorage.getItem('token')||'';let providers=[];
-function authHeaders(){return {'Authorization':'Bearer '+token,'Content-Type':'application/json'}}
-async function login(){let body=new URLSearchParams();body.append('username',username.value);body.append('password',password.value);let r=await fetch('/token',{method:'POST',body});if(!r.ok){alert('Usuario o clave incorrecta');return}let j=await r.json();token=j.access_token;localStorage.setItem('token',token);init()}
+function el(id){return document.getElementById(id)}
+function headers(){return {'Authorization':'Bearer '+token,'Content-Type':'application/json'}}
+async function doLogin(){let body=new URLSearchParams();body.append('username',el('username').value);body.append('password',el('password').value);let r=await fetch('/token',{method:'POST',body:body});if(!r.ok){alert('Usuario o clave incorrecta');return}let j=await r.json();token=j.access_token;localStorage.setItem('token',token);init()}
 function logout(){localStorage.removeItem('token');location.reload()}
-function showForm(){formCard.classList.remove('hidden');date.value=new Date().toISOString().slice(0,10)}function hideForm(){formCard.classList.add('hidden')}
-async function init(){if(!token)return;login.classList.add('hidden');app.classList.remove('hidden');await loadHotels();await loadProviders();await loadAccounts();await loadMovements()}
-async function loadHotels(){let r=await fetch('/hoteles',{headers:authHeaders()});let data=await r.json();hotel_id.innerHTML='';filter_hotel.innerHTML='<option value="">Todos los hoteles</option>';data.forEach(h=>{hotel_id.innerHTML+=`<option value="${h.id}">${h.name}</option>`;filter_hotel.innerHTML+=`<option value="${h.id}">${h.name}</option>`})}
-async function loadProviders(){let r=await fetch('/proveedores',{headers:authHeaders()});providers=await r.json();providers_list.innerHTML='';providers.forEach(p=>providers_list.innerHTML+=`<option value="${p.name}"></option>`)}
-provider_name.addEventListener('change',()=>{let p=providers.find(x=>x.name===provider_name.value);if(p){provider_rut.value=p.rut;provider_rut.readOnly=true}else{provider_rut.value='';provider_rut.readOnly=false}})
-async function loadAccounts(){let r=await fetch('/cuentas',{headers:authHeaders()});let data=await r.json();accounts.innerHTML='';data.forEach(c=>accounts.innerHTML+=`<option value="${c}"></option>`)}
-async function saveMovement(){let data={hotel_id:+hotel_id.value,date:date.value,description:description.value,account_name:account_name.value,provider_name:provider_name.value,provider_rut:provider_rut.value,doc_type:doc_type.value,doc_number:doc_number.value,total:+total.value||0,iva:+iva.value||0,net:+net.value||0,observations:observations.value};let r=await fetch('/movimientos',{method:'POST',headers:authHeaders(),body:JSON.stringify(data)});if(!r.ok){alert((await r.json()).detail||'Error');return}document.querySelectorAll('#formCard input').forEach(i=>i.value='');hideForm();await loadProviders();await loadAccounts();await loadMovements()}
-async function loadMovements(){let p=new URLSearchParams();if(filter_hotel.value)p.append('hotel_id',filter_hotel.value);if(date_from.value)p.append('date_from',date_from.value);if(date_to.value)p.append('date_to',date_to.value);if(doc_filter.value)p.append('doc_number',doc_filter.value);let r=await fetch('/movimientos?'+p.toString(),{headers:authHeaders()});if(!r.ok){logout();return}let data=await r.json();rows.innerHTML='';data.forEach(m=>rows.innerHTML+=`<tr><td>${m.date}</td><td>${m.hotel.name}</td><td>${m.account_name}</td><td>${m.provider.name}</td><td>${m.provider.rut}</td><td>${m.doc_type} ${m.doc_number}</td><td>${m.total}</td><td>${m.iva}</td><td>${m.net}</td><td><button class="danger" onclick="delMov(${m.id})">X</button></td></tr>`)}
-async function delMov(id){if(!confirm('¿Eliminar registro?'))return;await fetch('/movimientos/'+id,{method:'DELETE',headers:authHeaders()});loadMovements()}
-function exportFile(fmt){let p=new URLSearchParams();if(filter_hotel.value)p.append('hotel_id',filter_hotel.value);if(date_from.value)p.append('date_from',date_from.value);if(date_to.value)p.append('date_to',date_to.value);location.href='/export/'+fmt+'?'+p.toString()+'&token='+token}
+function showForm(){el('formCard').classList.remove('hidden');el('fecha').value=new Date().toISOString().slice(0,10)}
+function hideForm(){el('formCard').classList.add('hidden')}
+async function init(){if(!token)return;el('loginCard').classList.add('hidden');el('appPanel').classList.remove('hidden');await loadHotels();await loadProviders();await loadAccounts();await loadMovements()}
+async function loadHotels(){let r=await fetch('/hoteles',{headers:headers()});if(!r.ok){logout();return}let data=await r.json();el('hotel_id').innerHTML='';el('filter_hotel').innerHTML='<option value="">Todos los hoteles</option>';data.forEach(h=>{el('hotel_id').innerHTML+=`<option value="${h.id}">${h.name}</option>`;el('filter_hotel').innerHTML+=`<option value="${h.id}">${h.name}</option>`})}
+async function loadProviders(){let r=await fetch('/proveedores',{headers:headers()});providers=await r.json();el('providersList').innerHTML='';providers.forEach(p=>el('providersList').innerHTML+=`<option value="${p.name}"></option>`)}
+el('proveedor').addEventListener('change',()=>{let p=providers.find(x=>x.name===el('proveedor').value);if(p){el('rut').value=p.rut;el('rut').readOnly=true}else{el('rut').value='';el('rut').readOnly=false}});
+async function loadAccounts(){let r=await fetch('/cuentas',{headers:headers()});let data=await r.json();el('accountsList').innerHTML='';data.forEach(c=>el('accountsList').innerHTML+=`<option value="${c}"></option>`)}
+async function saveMovement(){let data={hotel_id:+el('hotel_id').value,fecha:el('fecha').value,descripcion:el('descripcion').value,nombre_cuenta:el('nombre_cuenta').value,proveedor:el('proveedor').value,rut:el('rut').value,tipo_documento:el('tipo_documento').value,numero_documento:el('numero_documento').value,monto_total:+el('monto_total').value||0,iva:+el('iva').value||0,neto:+el('neto').value||0,observaciones:el('observaciones').value};let r=await fetch('/movimientos',{method:'POST',headers:headers(),body:JSON.stringify(data)});if(!r.ok){let e=await r.json();alert(e.detail||'Error al guardar');return}document.querySelectorAll('#formCard input').forEach(i=>i.value='');hideForm();await loadProviders();await loadAccounts();await loadMovements()}
+async function loadMovements(){let p=new URLSearchParams();if(el('filter_hotel').value)p.append('hotel_id',el('filter_hotel').value);if(el('fecha_desde').value)p.append('fecha_desde',el('fecha_desde').value);if(el('fecha_hasta').value)p.append('fecha_hasta',el('fecha_hasta').value);if(el('doc_filter').value)p.append('numero_documento',el('doc_filter').value);let r=await fetch('/movimientos?'+p.toString(),{headers:headers()});if(!r.ok){logout();return}let data=await r.json();el('rows').innerHTML='';data.forEach(m=>el('rows').innerHTML+=`<tr><td>${m.fecha}</td><td>${m.hotel.name}</td><td>${m.nombre_cuenta}</td><td>${m.provider.name}</td><td>${m.provider.rut}</td><td>${m.tipo_documento} ${m.numero_documento}</td><td>${m.monto_total}</td><td>${m.iva}</td><td>${m.neto}</td><td><button type="button" class="danger" onclick="delMov(${m.id})">X</button></td></tr>`)}
+async function delMov(id){if(!confirm('¿Eliminar registro?'))return;await fetch('/movimientos/'+id,{method:'DELETE',headers:headers()});loadMovements()}
+function exportFile(fmt){let p=new URLSearchParams();p.append('token',token);if(el('filter_hotel').value)p.append('hotel_id',el('filter_hotel').value);if(el('fecha_desde').value)p.append('fecha_desde',el('fecha_desde').value);if(el('fecha_hasta').value)p.append('fecha_hasta',el('fecha_hasta').value);location.href='/export/'+fmt+'?'+p.toString()}
 init();
-</script>
-</body>
-</html>
+</script></body></html>
 '''
