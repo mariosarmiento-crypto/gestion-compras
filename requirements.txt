@@ -9,4 +9,5 @@ passlib[bcrypt]
 python-multipart
 jinja2
 requests
+pyjwt
 psycopg2-binary
