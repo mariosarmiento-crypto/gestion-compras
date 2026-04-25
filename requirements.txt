@@ -5,5 +5,8 @@ pandas
 openpyxl
 reportlab
 bcrypt
+passlib[bcrypt]
 python-multipart
+jinja2
+requests
 psycopg2-binary
