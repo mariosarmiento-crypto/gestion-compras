@@ -10,3 +10,4 @@ bcrypt
 jinja2
 requests
 reportlab
+psycopg2-binary
