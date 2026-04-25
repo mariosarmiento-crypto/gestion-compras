@@ -1,13 +1,9 @@
 fastapi
 uvicorn
 sqlalchemy
-passlib[bcrypt]
-pyjwt
-python-multipart
 pandas
 openpyxl
-bcrypt
-jinja2
-requests
 reportlab
+bcrypt
+python-multipart
 psycopg2-binary
